@@ -1,0 +1,77 @@
+
+name: Signup Test
+on: workflow_dispatch
+jobs:
+  signup:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Test signup with captcha bypass
+        run: |
+          echo "=== Testing signup from GitHub Actions ==="
+          
+          # Step 1: GET //signup
+          SIGNUP_PAGE=$(curl -s -c cookies.txt -b cookies.txt 'https://github.com//signup?social=false')
+          echo "Signup page size: $(echo "$SIGNUP_PAGE" | wc -c)"
+          
+          # Extract CSRF token
+          CSRF=$(echo "$SIGNUP_PAGE" | grep -oP 'name="authenticity_token"\s+value="\K[^"]+' | head -1)
+          TS=$(echo "$SIGNUP_PAGE" | grep -oP 'name="timestamp"\s+value="\K[^"]+' | head -1)
+          TSS=$(echo "$SIGNUP_PAGE" | grep -oP 'name="timestamp_secret"\s+value="\K[^"]+' | head -1)
+          HP=$(echo "$SIGNUP_PAGE" | grep -oP 'name="required_field_\K\d+' | head -1)
+          
+          echo "CSRF: ${CSRF:0:20}..."
+          echo "Timestamp: $TS"
+          
+          EMAIL="bsactions$(date +%s)@uberip.com"
+          UNAME="bsact$(date +%s)"
+          echo "Email: $EMAIL"
+          echo "Username: $UNAME"
+          
+          # Step 2: POST signup
+          HTTP_CODE=$(curl -s -o response.txt -w '%{http_code}' -c cookies.txt -b cookies.txt \
+            -d "authenticity_token=$CSRF" \
+            -d "user[email]=$EMAIL" \
+            -d "user[password]=S3cur3P%40ss2026!" \
+            -d "user[login]=$UNAME" \
+            -d "error_loading_captcha=1" \
+            -d "source=" \
+            -d "return_to=" \
+            -d "disable_signup=false" \
+            -d "required_field_${HP}=" \
+            -d "timestamp=$TS" \
+            -d "timestamp_secret=$TSS" \
+            -H "Origin: https://github.com" \
+            -H "Referer: https://github.com//signup" \
+            'https://github.com//signup?social=false')
+          
+          echo "POST status: $HTTP_CODE"
+          
+          # Check for redirect
+          REDIRECT=$(curl -s -o /dev/null -w '%{redirect_url}' -c cookies.txt -b cookies.txt \
+            -d "authenticity_token=$CSRF" \
+            -d "user[email]=$EMAIL" \
+            -d "user[password]=S3cur3P%40ss2026!" \
+            -d "user[login]=${UNAME}2" \
+            -d "error_loading_captcha=1" \
+            -d "source=" \
+            -d "return_to=" \
+            -d "disable_signup=false" \
+            -d "timestamp=$TS" \
+            -d "timestamp_secret=$TSS" \
+            'https://github.com//signup?social=false')
+          
+          echo "Redirect: $REDIRECT"
+          echo "Response size: $(wc -c < response.txt)"
+          head -c 500 response.txt
+          
+          # Check title
+          grep -oP '<title>\K[^<]+' response.txt || true
+          
+          echo ""
+          echo "=== Cookies ==="
+          cat cookies.txt | grep -v '^#' | grep -v '^$'
+          
+          echo ""
+          echo "=== Done ==="
+          echo "EMAIL=$EMAIL"
+          echo "USERNAME=$UNAME"
