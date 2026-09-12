@@ -1,7 +1,84 @@
-name: Test
-on: workflow_dispatch
+name: Test Signup Flow
+on:
+  workflow_dispatch:
+
 jobs:
-  test:
+  test-signup:
     runs-on: ubuntu-latest
     steps:
-      - run: curl -s https://api.ipify.org
+      - name: Check runner IP
+        run: |
+          echo "Runner IP:"
+          curl -s https://api.ipify.org
+          echo
+
+      - name: Test signup page
+        run: |
+          echo "=== GET /signup ==="
+          curl -s -o /tmp/signup.html -w "HTTP Status: %{http_code}\n" -D /tmp/signup_headers.txt https://github.com/signup
+          echo "Response headers:"
+          cat /tmp/signup_headers.txt | head -20
+          echo "---"
+          echo "Content length: $(wc -c < /tmp/signup.html)"
+          echo "DataDome count: $(grep -ci datadome /tmp/signup.html 2>/dev/null || echo 0)"
+          echo "Captcha count: $(grep -ci captcha /tmp/signup.html 2>/dev/null || echo 0)"
+          echo "Octocaptcha count: $(grep -ci octocaptcha /tmp/signup.html 2>/dev/null || echo 0)"
+          echo "Arkose count: $(grep -ci arkose /tmp/signup.html 2>/dev/null || echo 0)"
+          echo "FunCaptcha count: $(grep -ci funcaptcha /tmp/signup.html 2>/dev/null || echo 0)"
+          CSRF=$(grep -oP 'name="authenticity_token" value="\K[^"]+' /tmp/signup.html | head -1)
+          echo "CSRF token: ${CSRF:0:20}..."
+          echo
+
+      - name: Test double-slash signup
+        run: |
+          echo "=== GET //signup ==="
+          curl -s -o /tmp/signup2.html -w "HTTP Status: %{http_code}\n" https://github.com//signup
+          echo "Content length: $(wc -c < /tmp/signup2.html)"
+          echo "DataDome count: $(grep -ci datadome /tmp/signup2.html 2>/dev/null || echo 0)"
+          echo "Captcha count: $(grep -ci captcha /tmp/signup2.html 2>/dev/null || echo 0)"
+
+      - name: Test signup email check
+        run: |
+          echo "=== Testing signup_check/email ==="
+          # Get fresh CSRF token from /signup
+          curl -s -c /tmp/cookies.txt -o /tmp/s.html https://github.com/signup
+          CSRF=$(grep -oP 'name="authenticity_token" value="\K[^"]+' /tmp/s.html | head -1)
+          echo "Got CSRF token: ${CSRF:0:20}..."
+          
+          # Test signup_check/email
+          echo "--- POST /signup_check/email ---"
+          curl -s -b /tmp/cookies.txt -X POST \
+            -H "Content-Type: application/x-www-form-urlencoded" \
+            -H "Accept: application/json" \
+            -d "authenticity_token=$CSRF&value=testsignupflow99@example.com" \
+            "https://github.com/signup_check/email" -w "\nHTTP Status: %{http_code}\n"
+          echo
+
+      - name: Test login flow
+        run: |
+          echo "=== GET /login ==="
+          curl -s -o /tmp/login.html -w "HTTP Status: %{http_code}\n" https://github.com/login
+          echo "Content length: $(wc -c < /tmp/login.html)"
+          echo "Captcha count: $(grep -ci captcha /tmp/login.html 2>/dev/null || echo 0)"
+          echo "Octocaptcha count: $(grep -ci octocaptcha /tmp/login.html 2>/dev/null || echo 0)"
+          echo "Arkose count: $(grep -ci arkose /tmp/login.html 2>/dev/null || echo 0)"
+          # Extract form action
+          echo "Form actions:"
+          grep -oP 'action="\K[^"]*session[^"]*' /tmp/login.html || echo "none"
+
+      - name: Test GitHub OAuth authorize via logged-in session
+        run: |
+          echo "=== Test GitHub OAuth device flow ==="
+          # Start a device flow
+          RESULT=$(curl -s -X POST \
+            -H "Accept: application/json" \
+            -d "client_id=Iv1.b507a08c87ecfe98&scope=repo,user" \
+            https://github.com/login/device/code)
+          echo "Device flow result: $RESULT"
+          
+          # Can we access /login/device without captcha?
+          echo "--- GET /login/device ---"
+          curl -s -o /tmp/device.html -w "HTTP Status: %{http_code}\n" -L https://github.com/login/device
+          echo "Final URL shows in redirect chain"
+          echo "Content length: $(wc -c < /tmp/device.html)"
+          echo "Captcha in device page: $(grep -ci captcha /tmp/device.html 2>/dev/null || echo 0)"
