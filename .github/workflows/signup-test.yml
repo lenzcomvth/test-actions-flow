@@ -1,77 +1,131 @@
 
-name: Signup Test
+name: Headless Signup
 on: workflow_dispatch
 jobs:
   signup:
     runs-on: ubuntu-latest
     steps:
-      - name: Test signup with captcha bypass
+      - name: Install Playwright
         run: |
-          echo "=== Testing signup from GitHub Actions ==="
+          pip install playwright
+          playwright install chromium
           
-          # Step 1: GET //signup
-          SIGNUP_PAGE=$(curl -s -c cookies.txt -b cookies.txt 'https://github.com//signup?social=false')
-          echo "Signup page size: $(echo "$SIGNUP_PAGE" | wc -c)"
-          
-          # Extract CSRF token
-          CSRF=$(echo "$SIGNUP_PAGE" | grep -oP 'name="authenticity_token"\s+value="\K[^"]+' | head -1)
-          TS=$(echo "$SIGNUP_PAGE" | grep -oP 'name="timestamp"\s+value="\K[^"]+' | head -1)
-          TSS=$(echo "$SIGNUP_PAGE" | grep -oP 'name="timestamp_secret"\s+value="\K[^"]+' | head -1)
-          HP=$(echo "$SIGNUP_PAGE" | grep -oP 'name="required_field_\K\d+' | head -1)
-          
-          echo "CSRF: ${CSRF:0:20}..."
-          echo "Timestamp: $TS"
-          
-          EMAIL="bsactions$(date +%s)@uberip.com"
-          UNAME="bsact$(date +%s)"
-          echo "Email: $EMAIL"
-          echo "Username: $UNAME"
-          
-          # Step 2: POST signup
-          HTTP_CODE=$(curl -s -o response.txt -w '%{http_code}' -c cookies.txt -b cookies.txt \
-            -d "authenticity_token=$CSRF" \
-            -d "user[email]=$EMAIL" \
-            -d "user[password]=S3cur3P%40ss2026!" \
-            -d "user[login]=$UNAME" \
-            -d "error_loading_captcha=1" \
-            -d "source=" \
-            -d "return_to=" \
-            -d "disable_signup=false" \
-            -d "required_field_${HP}=" \
-            -d "timestamp=$TS" \
-            -d "timestamp_secret=$TSS" \
-            -H "Origin: https://github.com" \
-            -H "Referer: https://github.com//signup" \
-            'https://github.com//signup?social=false')
-          
-          echo "POST status: $HTTP_CODE"
-          
-          # Check for redirect
-          REDIRECT=$(curl -s -o /dev/null -w '%{redirect_url}' -c cookies.txt -b cookies.txt \
-            -d "authenticity_token=$CSRF" \
-            -d "user[email]=$EMAIL" \
-            -d "user[password]=S3cur3P%40ss2026!" \
-            -d "user[login]=${UNAME}2" \
-            -d "error_loading_captcha=1" \
-            -d "source=" \
-            -d "return_to=" \
-            -d "disable_signup=false" \
-            -d "timestamp=$TS" \
-            -d "timestamp_secret=$TSS" \
-            'https://github.com//signup?social=false')
-          
-          echo "Redirect: $REDIRECT"
-          echo "Response size: $(wc -c < response.txt)"
-          head -c 500 response.txt
-          
-          # Check title
-          grep -oP '<title>\K[^<]+' response.txt || true
-          
-          echo ""
-          echo "=== Cookies ==="
-          cat cookies.txt | grep -v '^#' | grep -v '^$'
-          
-          echo ""
-          echo "=== Done ==="
-          echo "EMAIL=$EMAIL"
-          echo "USERNAME=$UNAME"
+      - name: Run headless signup
+        run: |
+          python3 << 'SCRIPT'
+import asyncio
+from playwright.async_api import async_playwright
+
+async def main():
+    async with async_playwright() as p:
+        browser = await p.chromium.launch(headless=True)
+        context = await browser.new_context(
+            user_agent='Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/130.0.0.0 Safari/537.36'
+        )
+        page = await context.new_page()
+        
+        # Navigate to signup
+        print("=== Navigating to signup ===")
+        await page.goto('https://github.com/signup', wait_until='networkidle', timeout=30000)
+        print(f"Title: {await page.title()}")
+        print(f"URL: {page.url}")
+        
+        # Step 1: Enter email
+        email_input = page.locator('input[name="user[email]"]')
+        if await email_input.count() > 0:
+            import hashlib, time as t
+            uid = hashlib.md5(str(t.time()).encode()).hexdigest()[:8]
+            email = f"bspl{uid}@uberip.com"
+            print(f"Email: {email}")
+            await email_input.fill(email)
+            await page.wait_for_timeout(1000)
+            
+            # Look for continue button
+            continue_btn = page.locator('button:has-text("Continue")')
+            if await continue_btn.count() > 0:
+                await continue_btn.click()
+                await page.wait_for_timeout(2000)
+                print("Clicked Continue after email")
+        
+        # Step 2: Enter password
+        pwd_input = page.locator('input[name="user[password]"]')
+        if await pwd_input.count() > 0:
+            await pwd_input.fill('V3ry$tr0ng#2026!')
+            await page.wait_for_timeout(1000)
+            continue_btn = page.locator('button:has-text("Continue")')
+            if await continue_btn.count() > 0:
+                await continue_btn.click()
+                await page.wait_for_timeout(2000)
+                print("Clicked Continue after password")
+        
+        # Step 3: Enter username
+        user_input = page.locator('input[name="user[login]"]')
+        if await user_input.count() > 0:
+            await user_input.fill(f"bspl{uid}")
+            await page.wait_for_timeout(1000)
+            continue_btn = page.locator('button:has-text("Continue")')
+            if await continue_btn.count() > 0:
+                await continue_btn.click()
+                await page.wait_for_timeout(2000)
+                print("Clicked Continue after username")
+        
+        # Step 4: Wait for captcha
+        print("Waiting for captcha step...")
+        await page.wait_for_timeout(5000)
+        
+        # Check current state
+        print(f"Current URL: {page.url}")
+        print(f"Current title: {await page.title()}")
+        
+        # Check for captcha iframe
+        frames = page.frames
+        print(f"Frames: {len(frames)}")
+        for frame in frames:
+            print(f"  Frame: {frame.url}")
+        
+        # Check for octocaptcha
+        octo_frame = page.locator('iframe[src*="octocaptcha"]')
+        print(f"Octocaptcha iframes: {await octo_frame.count()}")
+        
+        # Check for submit button
+        submit_btn = page.locator('button[type="submit"]:visible, .js-octocaptcha-form-submit:visible')
+        print(f"Submit buttons visible: {await submit_btn.count()}")
+        
+        # Wait more for captcha to auto-complete
+        await page.wait_for_timeout(35000)  # Wait 35 seconds for timeout handler
+        
+        print(f"After 35s wait:")
+        print(f"  URL: {page.url}")
+        print(f"  Title: {await page.title()}")
+        
+        # Check for error_loading_captcha
+        elc = page.locator('#error_loading_captcha')
+        print(f"  error_loading_captcha element: {await elc.count()}")
+        
+        # Check if submit button is enabled
+        submit_btn = page.locator('.js-octocaptcha-form-submit')
+        if await submit_btn.count() > 0:
+            is_disabled = await submit_btn.get_attribute('disabled')
+            is_hidden = await submit_btn.get_attribute('hidden')
+            print(f"  Submit: disabled={is_disabled}, hidden={is_hidden}")
+            
+            # Click it if enabled
+            if not is_disabled:
+                print("  Clicking submit!")
+                await submit_btn.click()
+                await page.wait_for_timeout(5000)
+                print(f"  After submit - URL: {page.url}")
+                print(f"  After submit - Title: {await page.title()}")
+        
+        # Take a final state dump
+        content = await page.content()
+        print(f"  Page size: {len(content)}")
+        
+        # Check for verification page
+        if 'account_verifications' in page.url or 'verif' in page.url.lower():
+            print("  >>> REACHED VERIFICATION PAGE <<<")
+        
+        await browser.close()
+
+asyncio.run(main())
+SCRIPT
